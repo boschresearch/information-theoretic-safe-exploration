@@ -19,10 +19,20 @@ import math
 import numpy as np
 import torch
 
-from ise.utils import generic_utils
+from ise.utils.optimization_utils import IseConstrainedOptimizer
+from ise.utils.generic_utils import sample_uniform_in_box
+
 
 class IseAcquisition:
-    def __init__(self, gp_model, safe_seed, domain, learning_rate, learning_epochs, noise_variance=None):
+    def __init__(
+            self,
+            gp_model,
+            safe_seed,
+            domain,
+            learning_rate,
+            learning_epochs,
+            number_of_samples=None,
+            noise_variance=None):
         '''
         Constructor
 
@@ -34,6 +44,7 @@ class IseAcquisition:
         of a d-dimensional box
         learning_rate (float): initial learning rate for the gradient ascent optimization
         learning_epochs (int): gradient ascent iterations number
+        number_of_samples (int): number of samples to use to find optimization starting points
         noise_variance (callable): optional, function that maps a point in the domain to its observation noise.
         To be provided in case of heteroskedastik GP
         '''
@@ -47,6 +58,7 @@ class IseAcquisition:
         self._learning_epochs = learning_epochs
         self._relevant_lengthscale = gp_model.covar_module.base_kernel.lengthscale.item()
         self._search_radius = 1.1 * self._relevant_lengthscale
+        self._number_of_samples = number_of_samples
         if noise_variance is not None:
             self._noise_variance = noise_variance
         else:
@@ -116,7 +128,7 @@ class IseAcquisition:
 
     def compute_acquisition_value(self, observed_point, point_to_evaluate_entropy_variance_at):
         '''
-        Compute the value of the acquisition function, i.e. the expected Psi entropy variation at 
+        Compute the value of the acquisition function, i.e. the expected entropy variation at
         point_to_evaluate_entropy_variance_at after an hypothetical measurement at observed_point
         
         Parameters
@@ -196,21 +208,23 @@ class IseAcquisition:
         among the sampled ones
         '''
 
-        number_of_samples = np.power(1000, self._dimension)
-        potential_starters_x = generic_utils.sample_uniform_in_box(self._domain, number_of_samples).unsqueeze(1)
+        potential_starters_x = sample_uniform_in_box(self._domain, self._number_of_samples).unsqueeze(1)
+        potential_starters_x = torch.cat((potential_starters_x, self._safe_seed.unsqueeze(0)))
         potential_starters_z = copy.deepcopy(potential_starters_x)
         
         number_of_samples_to_compute_in_parallel = 1000
-        number_of_batches = math.ceil(number_of_samples / number_of_samples_to_compute_in_parallel)
+        number_of_batches = math.ceil(self._number_of_samples / number_of_samples_to_compute_in_parallel)
         potential_starters_values = torch.empty(0)
-        for i in range(number_of_batches):
-            start_index = i * number_of_samples_to_compute_in_parallel
-            end_index = start_index + number_of_samples_to_compute_in_parallel if i < number_of_batches - 1 else None
-            values_of_current_batch = self.compute_acquisition_value(
-                potential_starters_x[start_index : end_index], potential_starters_z[start_index : end_index]).squeeze()
-            if values_of_current_batch.dim() == 0:
-                values_of_current_batch.unsqueeze(0)
-            potential_starters_values = torch.cat((potential_starters_values, values_of_current_batch))
+        with torch.no_grad():
+            for i in range(number_of_batches):
+                start_index = i * number_of_samples_to_compute_in_parallel
+                end_index = start_index + number_of_samples_to_compute_in_parallel if i < number_of_batches - 1 else None
+                values_of_current_batch = self.compute_acquisition_value(
+                    potential_starters_x[start_index: end_index],
+                    potential_starters_z[start_index: end_index]).squeeze()
+                if values_of_current_batch.dim() == 0:
+                    values_of_current_batch.unsqueeze(0)
+                potential_starters_values = torch.cat((potential_starters_values, values_of_current_batch))
 
         max_values_indices = torch.topk(potential_starters_values, number_of_staring_points)[1]
         starters_x = potential_starters_x[max_values_indices]
@@ -227,8 +241,9 @@ class IseAcquisition:
         
         Parameters
         ----------
-        number_of_starting_points: (int) number of restarts to use
-        
+        starting_points: (pair of tensors) (points_x, points_z) to use as starters for optimization.
+        If not provided random points will be selected
+
         Returns
         -------
         (torch.Tensor) The point resulting from the gradient ascent procedure
@@ -250,7 +265,7 @@ class IseAcquisition:
         starting_points_x.requires_grad = True
         starting_points_z.requires_grad = True
 
-        optimizer = generic_utils.IseConstrainedOptimizer(
+        optimizer = IseConstrainedOptimizer(
             starting_points_x,
             starting_points_z,
             self._domain,

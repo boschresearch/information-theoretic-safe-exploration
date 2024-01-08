@@ -22,7 +22,7 @@ from ise.acquisitions.stage_opt_acquisition import StageOptAcquisition
 from ise.utils.generic_utils import sample_uniform_in_box, point_is_within_box
 
 class StageOptLineBoAcquisition(LineBoAcquisitionBase):
-    def __init__(self, gp_model, safe_seed, domain, lipschitz_constant, objective):
+    def __init__(self, gp_model, safe_seed, domain, lipschitz_constant):
         '''
         Constructor
 
@@ -32,10 +32,10 @@ class StageOptLineBoAcquisition(LineBoAcquisitionBase):
         safe_seed (torch.Tensor): initial safe seed
         domain (list of pairs of floats): list of the coordinates of the domain's vertices
         lipschitz_constant (float): Lipschitz constant to be used by the acquisition function
-        objective (callable): ojective function modeled by the GP
         '''
         
-        super().__init__(gp_model, safe_seed, domain, objective)
+        super().__init__(safe_seed, domain)
+        self._model = gp_model
         self._lipschitz_constant = lipschitz_constant
         self._stageopt_acquisition = StageOptAcquisition(gp_model, safe_seed, domain, lipschitz_constant, 1)
 

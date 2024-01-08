@@ -1,4 +1,4 @@
-# Copyright (c) 2022 Robert Bosch GmbH
+# Copyright (c) 2023 Robert Bosch GmbH
 # Author: Alessandro G. Bottero
 #
 # This program is free software: you can redistribute it and/or modify
@@ -17,49 +17,57 @@
 import math
 import torch
 
+from botorch.acquisition.max_value_entropy_search import qMaxValueEntropy
+
 from ise.acquisitions.line_bo_acquisiton_base import LineBoAcquisitionBase
-from ise.acquisitions.heuristic_stage_opt_like_acquisition import HeuristicStageOptAcquisition
+from ise.acquisitions.discrete_safe_acquisition_optimizer import DiscreteSafeAcquisitionOptimizer
 from ise.utils.generic_utils import sample_uniform_in_box, point_is_within_box
 
-# TODO: Address code duplications with StageOptLineBoAcquisition
-class HeuristicStageOptLineBoAcquisition(LineBoAcquisitionBase):
-    def __init__(self, gp_model, safe_seed, domain, lipschitz_constant, heterosketastic=False):
+class DummyGPModelAlwaysSafe:
+    def lower_confidence_bound(self, x):
+        return torch.ones(x.shape[0], 1, 1)
+
+class MesLineBoAcquisition(LineBoAcquisitionBase):
+    def __init__(self, gp_model_objective, safe_seed, domain, mes_candidate_size=50, gp_model_safety=None):
         '''
         Constructor
-        '''
-        super().__init__(safe_seed, domain)
-        self._heuristic_acquisition = HeuristicStageOptAcquisition(
-            gp_model, safe_seed, domain, lipschitz_constant, 1, heterosketastic)
-        self._model = gp_model
 
-
-    def _compute_safe_and_unsafe_sets(self, points):
-        '''
-        Separate the given set of points into safe and unsafe sets
         Parameters
         ----------
-        points (torch.Tensor): points to be separated into safe and unsafe ones
-
-        Returns
-        -------
-        (pair of torch.Tensor) the safe and unsafe subsets of points
+        gp_model_objective (gpytorch.models.ExactGP): GP model of the objective function, whose posterior
+        is used by the MES acquisition function
+        safe_seed (torch.Tensor): initial safe evaluation parameter
+        domain (list of pairs of floats): list of the coordinates of the domain's vertices
+        mes_candidates_number (int): Number of points of the candidate set for the MES acquisition
+        gp_model_safety (gpytorch.models.ExactGP): GP model of the safety constraint, used to compute safe set if set.
+        If None, then the acquisition function is unconstrained and can select any parameter in the domain
         '''
 
-        points_are_safe = (self._model.lower_confidence_bound(points) >= 0).squeeze()
-        points_are_unsafe = torch.logical_not(points_are_safe)
-
-        return points[points_are_safe], points[points_are_unsafe]
+        super().__init__(safe_seed, domain)
+        is_constrained = gp_model_safety is not None
+        self._model_objective = gp_model_objective
+        domain_as_tensor = torch.tensor(domain, dtype=torch.float32)
+        candidate_set = torch.rand(mes_candidate_size, len(domain), dtype=domain_as_tensor.dtype)
+        candidate_set = domain_as_tensor[0, 0] + \
+                        (domain_as_tensor[0, 1] - domain_as_tensor[0, 0]) * candidate_set
+        mes_acquisition = qMaxValueEntropy(gp_model_objective, candidate_set)
+        if is_constrained:
+            self._acquisition = DiscreteSafeAcquisitionOptimizer(
+                gp_model_objective, safe_seed, mes_acquisition, domain, None, gp_model_safety)
+        else:
+            self._acquisition = DiscreteSafeAcquisitionOptimizer(
+                gp_model_objective, safe_seed, mes_acquisition, domain, None, DummyGPModelAlwaysSafe())
 
 
     def _find_argmax_location(self, origin, normalized_direction):
         '''
-        Finds points that maximizes acquisition function on line passing through origin and
+        Finds points that maximizes acquisition function on line passing through origin and 
         with direction normalized_direction
-
+        
         Parameters
         ----------
         origin (torch.Tensor): Origin of the line on which the acquisition function has to be optimized
-        normalized_direction: (torch.Tensor)  Direction of the line on which the acquisition function has
+        normalized_direction: (torch.Tensor)  Direction of the line on which the acquisition function has 
         to be optimized
 
         Returns
@@ -69,7 +77,7 @@ class HeuristicStageOptLineBoAcquisition(LineBoAcquisitionBase):
 
         standard_subspace_bounds = self._get_subspace_bounds(origin, normalized_direction)
         subspace_length = standard_subspace_bounds[0][1] - standard_subspace_bounds[0][0]
-        samples_per_unit_length = 50
+        samples_per_unit_length = 100
         number_of_samples = math.ceil(subspace_length * samples_per_unit_length)
 
         subspace_augmented_samples = sample_uniform_in_box(standard_subspace_bounds, number_of_samples)
@@ -80,11 +88,7 @@ class HeuristicStageOptLineBoAcquisition(LineBoAcquisitionBase):
         if len(rembedded_samples) == 0:
             return None, None
 
-        safe_samples, unsafe_samples = self._compute_safe_and_unsafe_sets(rembedded_samples)
-        if len(safe_samples) == 0:
-            return None, None
-
-        return self._heuristic_acquisition.optimize((safe_samples, unsafe_samples))
+        return self._acquisition.optimize(rembedded_samples)
 
 
     def optimize(self):

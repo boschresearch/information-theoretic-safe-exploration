@@ -1,4 +1,4 @@
-# Copyright (c) 2022 Robert Bosch GmbH
+# Copyright (c) 2023 Robert Bosch GmbH
 # Author: Alessandro G. Bottero
 #
 # This program is free software: you can redistribute it and/or modify
@@ -15,65 +15,63 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 import math
-import numpy as np
 import torch
 
 from ise.acquisitions.line_bo_acquisiton_base import LineBoAcquisitionBase
-from ise.utils import generic_utils
+from ise.acquisitions.safe_opt_acquisition import SafeOptAcquisition
+from ise.utils.generic_utils import sample_uniform_in_box, point_is_within_box
 
-class ConstrainedUcbLineBoAcquisition(LineBoAcquisitionBase):
-    def __init__(self, gp_model, safe_seed, domain, constraint, beta_squared):
+class SafeOptLineBoAcquisition(LineBoAcquisitionBase):
+    def __init__(self, gp_model_safety, gp_model_objective, safe_seed, domain, lipschitz_constant):
         '''
         Constructor
 
         Parameters
         ----------
-        gp_model (gpytorch.models.ExactGP): GP model whose posterior is used by the acquisition function
+        gp_model_safety (gpytorch.models.ExactGP): GP that models safety constraint function
+        gp_model_objective (gpytorch.models.ExactGP): GP that models objective function
         safe_seed (torch.Tensor): initial safe seed
         domain (list of pairs of floats): list of the coordinates of the domain's vertices
-        constraint (callable): Constraint f (of the form f(x) >= 0) that the point to sample must satisfy
+        lipschitz_constant (float): Lipschitz constant to be used by the acquisition function
         objective (callable): ojective function modeled by the GP
         '''
-
+        
         super().__init__(safe_seed, domain)
-        self._model = gp_model
-        self._constraint = constraint
-        self._beta = np.sqrt(beta_squared)
+        self._model_safety = gp_model_safety
+        self._model_objective = gp_model_objective
+        self._lipschitz_constant = lipschitz_constant
+        self._safeopt_acquisition = SafeOptAcquisition(
+            gp_model_safety, gp_model_objective, safe_seed, domain, lipschitz_constant, 1)
 
 
-    def _compute_acquisition_value(self, point):
+    def _compute_safe_and_unsafe_sets(self, points):
         '''
-        Compute the value of the acquisition function at the specified parameter(s)
+        Separate the given set of points into safe and unsafe sets
 
         Parameters
         ----------
-        point (torch.Tensor): point(s) at which to compute the acquisition value
-
+        points (torch.Tensor): points to be separated into safe and unsafe ones
+        
         Returns
         -------
-        (torch.Tensor) Acquisition value at point
+        (pair of torch.Tensor) the safe and unsafe subsets of points
         '''
+        
+        points_are_safe = (self._model_safety.lower_confidence_bound(points) >= 0).squeeze()
+        points_are_unsafe = torch.logical_not(points_are_safe)
 
-        posterior_gp = self._model(point)
-        mean = posterior_gp.mean
-        standard_deviation = torch.sqrt(posterior_gp.variance)
-        acquisition_value = (mean + self._beta * standard_deviation).view((1, len(point)))
-
-        sign_of_safety_condition = \
-            torch.sign(self._constraint(point)).squeeze() * torch.sign(acquisition_value).squeeze()
-
-        return sign_of_safety_condition * acquisition_value
+        return points[points_are_safe], points[points_are_unsafe]
 
 
     def _find_argmax_location(self, origin, normalized_direction):
         '''
-        Finds points that maximizes acquisition function on line passing through origin and
+        Finds points that maximizes acquisition function on line passing through origin and 
         with direction normalized_direction
-
+        
         Parameters
         ----------
         origin (torch.Tensor): Origin of the line on which the acquisition function has to be optimized
-        normalized_direction: (torch.Tensor)  Direction of the line on which the acquisition function has
+        normalized_direction: (torch.Tensor)  Direction of the line on which the acquisition function has 
         to be optimized
 
         Returns
@@ -81,30 +79,24 @@ class ConstrainedUcbLineBoAcquisition(LineBoAcquisitionBase):
         (torch.Tensor) Point that maximises acquisition function along given line
         '''
 
-        standard_subspace_bounds = self._get_subspace_bounds(self._last_sampled_point, normalized_direction)
+        standard_subspace_bounds = self._get_subspace_bounds(origin, normalized_direction)
         subspace_length = standard_subspace_bounds[0][1] - standard_subspace_bounds[0][0]
-        samples_per_unit_length = 35
+        samples_per_unit_length = 100
         number_of_samples = math.ceil(subspace_length * samples_per_unit_length)
 
-        subspace_augmented_samples = generic_utils.sample_uniform_in_box(standard_subspace_bounds, number_of_samples)
+        subspace_augmented_samples = sample_uniform_in_box(standard_subspace_bounds, number_of_samples)
 
         rembedded_samples = self._one_d_samples_to_full_domain(subspace_augmented_samples, origin, normalized_direction)
-        samples_are_in_domain = generic_utils.point_is_within_box(rembedded_samples, self._domain)
+        samples_are_in_domain = point_is_within_box(rembedded_samples, self._domain)
         rembedded_samples = rembedded_samples[samples_are_in_domain].unsqueeze(1)
         if len(rembedded_samples) == 0:
             return None, None
 
-        samples_values = self._compute_acquisition_value(rembedded_samples).squeeze()
-
-        samples_are_safe = samples_values > 0.  # Assuming objective is negative when constraint is violated
-        rembedded_samples = rembedded_samples[samples_are_safe]
-        if len(rembedded_samples) == 0:
+        safe_samples, unsafe_samples = self._compute_safe_and_unsafe_sets(rembedded_samples)
+        if len(safe_samples) == 0:
             return None, None
 
-        safe_values = samples_values[samples_are_safe]
-        optimum_value_index = torch.topk(safe_values, 1)[1]
-
-        return rembedded_samples[optimum_value_index].view(1, len(self._domain)), safe_values[optimum_value_index]
+        return self._safeopt_acquisition.optimize((safe_samples, unsafe_samples))
 
 
     def optimize(self):

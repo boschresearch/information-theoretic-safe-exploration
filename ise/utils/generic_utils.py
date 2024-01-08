@@ -1,4 +1,4 @@
-# Copyright (c) 2022 Robert Bosch GmbH
+# Copyright (c) 2023 Robert Bosch GmbH
 # Author: Alessandro G. Bottero
 #
 # This program is free software: you can redistribute it and/or modify
@@ -19,6 +19,7 @@ import gpytorch
 import numpy as np
 import scipy as sp
 import torch
+
 
 def point_is_within_box(point, box):
     '''
@@ -45,105 +46,11 @@ def point_is_within_box(point, box):
     return point_is_inside_box
 
 
-def safe_line_search_gradient_step(point, bounding_box, initial_learning_rate, safety_constraint=None):
-    '''
-    Performs a line-search gradient ascent step ensuring that the resulting point is within a given hyper-box
-    and that it satisfy some given constraint
-    
-    Parameters
-    ----------
-    point (torch.Tensor): staring point for the gradient step
-    bounding_box (list of pairs of floats): list of the coordinates of the box's vertices
-    initial_learning_rate (float): learning rate for te gradient step
-    safety_constraint (callable): optional additional contraint to be satisfied. It is consider satisfied if
-    safety_constraint(end_point) >= 0.
-
-    Returns
-    -------
-    End point after the gradient step and the used (possibly reduced) learning rate
-    '''
-    reduction_rate = 0.01
-    number_of_tries = 50
-    learning_rate = initial_learning_rate
-    constraints_violated = torch.ones(point.shape[0], dtype=torch.bool)
-    for i in range(number_of_tries):
-        previous_value = point.detach().clone()
-        point[constraints_violated] += (learning_rate * point.grad)[constraints_violated]
-        constraints_violated = (torch.logical_not(point_is_within_box(point, bounding_box))).squeeze()
-        if safety_constraint is not None:
-            constraints_violated = constraints_violated | (safety_constraint(point) < 0).squeeze()
-
-        if len(point[constraints_violated]) == 0:
-            return point, learning_rate
-
-        fraction_to_reduce_learning_rate_of = i * reduction_rate
-        learning_rate[constraints_violated] *= 1 - fraction_to_reduce_learning_rate_of
-        point[constraints_violated] = previous_value[constraints_violated]
-
-    return point, learning_rate
-
-
-class SimpleSafetyConstrainedOptimizer():
-    def __init__(self, parameter, domain, learning_rate, safety_condition=None):
-        self._parameter = parameter
-        self._learning_rate = learning_rate * torch.ones(parameter.size())
-        self._domain = domain
-        self._safety_condition = safety_condition
-
-    def step(self):
-        '''
-        Perform a gradient ascent step
-
-        Returns
-        -------
-        Final learning rate used to perform the step without exiting the domain or violating the constraint
-        '''
-
-        with torch.no_grad():
-            self._parameter, learning_rate = safe_line_search_gradient_step(
-                self._parameter, self._domain, self._learning_rate, self._safety_condition)
-            return learning_rate
-
-    def zero_grad(self):
-        '''
-        Resets the gradients to zero
-        '''
-
-        self._parameter.grad.zero_()
-
-
-class IseConstrainedOptimizer():
-    def __init__(self, x, z, domain, initial_learning_rate, safety_condition):
-        self.__x_optimizer = SimpleSafetyConstrainedOptimizer(
-            x, domain, initial_learning_rate, safety_condition)
-        self.__z = z
-
-    def step(self):
-        '''
-        Perform a gradient ascent step
-
-        Returns
-        -------
-        Final learning rate used to perform the step without exiting the domain or violating the constraint
-        '''
-        with torch.no_grad():
-            learning_rate = self.__x_optimizer.step()
-            self.__z += learning_rate * self.__z.grad
-
-    def zero_grad(self):
-        '''
-        Resets the gradients to zero
-        '''
-
-        self.__x_optimizer.zero_grad()
-        self.__z.grad.zero_()
-
-
 def sample_from_2d_gaussian(
         dimension, mean, short_dimension_variance, long_dimension_variance, number_of_samples, domain):
     '''
-    Sample pairs of dimension-dimensional points [(x, z)], where the x points are distributed according to a bivariate 
-    Gaussian with ellipsoid rtated of 45 degrees of center (mean, mean) and axis short_dimension_variance and 
+    Sample pairs of dimension-dimensional points [(x, z)], where the x points are distributed according to a bivariate
+    Gaussian with ellipsoid rtated of 45 degrees of center (mean, mean) and axis short_dimension_variance and
     long_dimension_variance
     
     Parameters
@@ -232,7 +139,7 @@ def sample_gp_function(gp_model, bounds, noise_variance):
         outputs = gp_model(
             torch.tensor(inputs, dtype=torch.float)).sample(sample_shape=torch.Size((1,))).squeeze().numpy()
 
-    def gp_sample(x, noise=True):
+    def gp_sample(x, noise=False):
         """
         Linear interpolator for GP sampled values
 
@@ -257,7 +164,7 @@ def sample_gp_function(gp_model, bounds, noise_variance):
 
 def get_gp_sample_safe_at_origin(gp_prior, bounds, noise_variance, safety_threshold=0.):
     '''
-    Sample an interpolator for a GP saple that is safe at the origin
+    Sample an interpolator for a GP sample that is safe at the origin
 
     Parameters
     ----------
@@ -276,12 +183,36 @@ def get_gp_sample_safe_at_origin(gp_prior, bounds, noise_variance, safety_thresh
         gp_sample = sample_gp_function(gp_prior, bounds, noise_variance)
         dimension = len(bounds)
         origin = torch.zeros((1, dimension))
-        safety_bufer = 1
         upper_bound = 5
         value_at_origin = gp_sample(origin, False)
         noise = noise_variance(origin) if callable(noise_variance) else noise_variance
         test_gp.add_observations(origin, value_at_origin, torch.tensor([noise]))
-        if test_gp.lower_confidence_bound(origin) > safety_threshold + safety_bufer and value_at_origin < upper_bound:
+        if test_gp.lower_confidence_bound(origin) > safety_threshold + 1 and value_at_origin < upper_bound:
+            return gp_sample
+
+
+def get_gp_sample_bounded_at_origin(gp_prior, domain, bound_at_origin, noise_variance, ):
+    '''
+    Sample an interpolator for a GP sample whose value at the orign is bounded by bound_at_origin
+
+    Parameters
+    ----------
+    gp_prior (gpytorch.models.ExactGP): GP model to sample from
+    domain (list of pairs of floats): list of the coordinates of the domain's vertices
+    bound_at_origin (float): upper bound for value of gp_sample at origin
+    noise_variance (float): variance of the noise to add to the sampled function's evaluations
+
+    Returns
+    -------
+    Callable interpolator for a safe GP sample
+    '''
+
+    while True:
+        gp_sample = sample_gp_function(gp_prior, domain, noise_variance)
+        dimension = len(domain)
+        origin = torch.zeros((1, dimension))
+        value_at_origin = gp_sample(origin, False)
+        if value_at_origin < bound_at_origin:
             return gp_sample
 
 

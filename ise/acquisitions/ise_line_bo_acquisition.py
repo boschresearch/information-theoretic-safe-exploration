@@ -24,7 +24,7 @@ from ise.acquisitions.ise_acquisition import IseAcquisition
 from ise.utils import generic_utils
 
 class IseLineBoAcquisition(LineBoAcquisitionBase):
-    def __init__(self, gp_model, safe_seed, domain, objective, noise_variance=None):
+    def __init__(self, gp_model, safe_seed, domain, noise_variance=None):
         '''
         Constructor
 
@@ -33,14 +33,15 @@ class IseLineBoAcquisition(LineBoAcquisitionBase):
         gp_model (gpytorch.models.ExactGP): GP model whose posterior is used by the acquisition function
         safe_seed (torch.Tensor): initial safe seed
         domain (list of pairs of floats): list of the coordinates of the domain's vertices
-        objective (callable): ojective function modeled by the GP
         noise_variance (callable or None): Optional, to be provided in case of heteroskedastic noise it maps input
         locations to the corresponding observation noise
         '''
 
-        super().__init__(gp_model, safe_seed, domain, objective)
+        super().__init__(safe_seed, domain)
+        self._model = gp_model
+        self._relevant_lengthscale = gp_model.covar_module.base_kernel.lengthscale.item()
         self._ise_acquisition = IseAcquisition(
-            gp_model, safe_seed, domain, 0, 0, noise_variance)
+            gp_model, safe_seed, domain, 0, 0, 0, noise_variance)
 
 
     def _find_argmax_location(self, origin, normalized_direction):
@@ -98,7 +99,8 @@ class IseLineBoAcquisition(LineBoAcquisitionBase):
             start_index = i * number_of_samples_to_compute_in_parallel
             end_index = start_index + number_of_samples_to_compute_in_parallel if i < number_of_batches - 1 else None
             values_of_current_batch = self._ise_acquisition.compute_acquisition_value(
-                rembedded_samples_x[start_index: end_index].unsqueeze(1), rembedded_samples_z[start_index: end_index].unsqueeze(1))
+                rembedded_samples_x[start_index: end_index].unsqueeze(1),
+                rembedded_samples_z[start_index: end_index].unsqueeze(1))
             if values_of_current_batch.dim() == 0:
                 values_of_current_batch.unsqueeze(0)
             values = torch.cat((values, values_of_current_batch))

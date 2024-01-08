@@ -15,7 +15,17 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 from .constrained_ucb_line_bo_acquisition import ConstrainedUcbLineBoAcquisition
-from .line_bo_acquisiton_base import LineBoAcquisitionBase
+from .discrete_safe_acquisition_optimizer import DiscreteSafeAcquisitionOptimizer
+from .heuristic_stage_opt_like_acquisition import HeuristicStageOptAcquisition
+from .heuristic_stage_opt_like_line_bo_acquisition import HeuristicStageOptLineBoAcquisition
+from .info_theoretic_line_bo_acquisition import InfoTheoreticLineBoAcquisition
+from .info_theoretic_safe_bo_acquition import InfoTheoreticSafeBoAcquisition
 from .ise_acquisition import IseAcquisition
 from .ise_line_bo_acquisition import IseLineBoAcquisition
+from .line_bo_acquisiton_base import LineBoAcquisitionBase
+from .mes_line_bo_acquisition import MesLineBoAcquisition
+from .mes_wrapper_acquisition import MesAcquisitionWrapper
+from .safe_opt_acquisition import SafeOptAcquisition
+from .safe_opt_line_bo_acquisition import SafeOptLineBoAcquisition
+from .stage_opt_acquisition import StageOptAcquisition
 from .stage_opt_line_bo_acquisition import StageOptLineBoAcquisition

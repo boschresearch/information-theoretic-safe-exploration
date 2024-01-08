@@ -53,7 +53,7 @@ def main():
     # Instantiate ISE acquisition function
     learning_rate = 0.01
     learning_epochs = 100
-    acquisition_function = IseAcquisition(gp_model, safe_seed, domain, learning_rate, learning_epochs)
+    acquisition_function = IseAcquisition(gp_model, safe_seed, domain, learning_rate, learning_epochs, 1000)
 
     # Create object collecting information needed for plotting
     latent_function_safe_set = get_1d_safe_set(latent_function, kernel_lengthscale, domain[0])
