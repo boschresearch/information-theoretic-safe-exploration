@@ -4,8 +4,6 @@ PyTorch implementation of the NeurIPS 2022 paper "Information-Theoretic Safe Exp
 The paper can be found [here](https://openreview.net/pdf?id=cV03Zw0V-3J). The code allows the users to use our 
 implementation of the `ISE` acquisition function, together with others used in the paper experiment section.
 
-**NOTE**: Code for the extension paper "Information-Theoretic Safe Bayesian Optimization" will soon be available in this repo as well.
-
 ## Purpose of the project
 
 This software is a research prototype, solely developed for and published as
