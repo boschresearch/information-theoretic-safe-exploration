@@ -1,13 +1,17 @@
-# Copyright (C) Robert Bosch GmbH 2020.
+# Copyright (c) 2023 Robert Bosch GmbH
 #
-# All rights reserved, also regarding any disposal, exploitation,
-# reproduction, editing, distribution, as well as in the event of
-# applications for industrial property rights.
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Affero General Public License as published
+# by the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
 #
-# This program and the accompanying materials are made available under
-# the terms of the Bosch Internal Open Source License v4 and later
-# which accompanies this distribution, and is available at
-# http://bios.intranet.bosch.com/bioslv4.txt
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU Affero General Public License for more details.
+#
+# You should have received a copy of the GNU Affero General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 """Contains the default configurations for our experiments.
 
